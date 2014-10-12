@@ -36,7 +36,7 @@ var createCanvasElement = function (width, height, cellSize, id, insertAfter) {
 
   var canvas = createHDCanvas();
 
-  if (insertAfter) insertAfter.parentNode.insertBefore(canvas, insertAfter.nextSibling);
+  if (insertAfter) document.getElementById(insertAfter).appendChild(canvas);
   else document.body.appendChild(canvas);
 
   return canvas;
