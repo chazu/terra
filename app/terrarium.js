@@ -7,19 +7,32 @@ var dom = require('./dom.js');
  * Terrarium constructor function
  * @param {int} width             number of cells in the x-direction
  * @param {int} height            number of cells in the y-direction
- * @param {string} id             id assigned to the generated canvas
- * @param {int} cellSize          pixel width of each cell (default 10)
- * @param {string} insertAfter    id of the element to insert the canvas after
+ * @param {object} options
+ *   @param {string} id             id assigned to the generated canvas
+ *   @param {int} cellSize          pixel width of each cell (default 10)
+ *   @param {string} insertAfter    id of the element to insert the canvas after
+ *   @param {float} trails          a number from [0, 1] indicating whether trails should
+ *                                    be drawn (0 = no trails, 1 = neverending trails)
+ *                                    "background" option is required if trails is set
+ *   @param {array} background      an RGB triplet for the canvas' background
  */
-function Terrarium(width, height, id, cellSize, insertAfter) {
-  cellSize = cellSize || 10;
-  this.cellSize = cellSize;
+function Terrarium (width, height, options) {
+  var cellSize, neighborhood;
+  options = options || {};
+  cellSize = options.cellSize || 10;
+  neighborhood = options.neighborhood || options.neighbourhood;
+  if (typeof neighborhood === 'string') neighborhood = neighborhood.toLowerCase();
+
   this.width = width;
   this.height = height;
+  this.cellSize = cellSize;
+  this.trails = options.trails;
+  this.background = options.background;
+  this.canvas = dom.createCanvasElement(width, height, cellSize, options.id, options.insertAfter, this.background);
   this.grid = [];
-  this.canvas = dom.createCanvasElement(width, height, cellSize, id, insertAfter);
   this.nextFrame = false;
   this.hasChanged = false;
+  this.getNeighborCoords = _.getNeighborCoordsFn(width, height, neighborhood === 'vonneumann', options.periodic);
 }
 
 /**
@@ -102,7 +115,7 @@ Terrarium.prototype.step = function (steps) {
   function processCreaturesInner (creature, x, y) {
     if (creature) {
       var neighbors = _.map(
-        _.getNeighborCoords(x, y, gridWidth - 1, gridHeight - 1, creature.actionRadius),
+        self.getNeighborCoords(x, y, creature.actionRadius),
         zipCoordsWithNeighbors
       );
       var result = creature.process(neighbors, x, y);
@@ -190,7 +203,7 @@ Terrarium.prototype.step = function (steps) {
  * Updates the canvas to reflect the current grid
  */
 Terrarium.prototype.draw = function () {
-  display(this.canvas, this.grid, this.cellSize);
+  display(this.canvas, this.grid, this.cellSize, this.trails, this.background);
 };
 
 /**

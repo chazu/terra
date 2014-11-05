@@ -134,6 +134,7 @@ var factory = (function () {
     } else return this.energy !== this.maxEnergy;
   };
 
+  baseCA.prototype.actionRadius = 1;
   baseCA.prototype.boundEnergy = function () {};
   baseCA.prototype.isDead = function () { return false; };
   baseCA.prototype.process = function (neighbors, x, y) {};
@@ -165,7 +166,7 @@ var factory = (function () {
           };
         }
 
-        var color = options.color;
+        var color = options.color || options.colour;
         // set the color randomly if none is provided
         if (typeof color !== 'object' || color.length !== 3) {
           options.color = [_.random(255), _.random(255), _.random(255)];
@@ -196,11 +197,13 @@ var factory = (function () {
            function () { init.call(this); } :
            function () {};
 
-        var color = options.color;
+        var color = options.color = options.color || options.colour;
         // set the color randomly if none is provided
         if (typeof color !== 'object' || color.length !== 3) {
           options.color = [_.random(255), _.random(255), _.random(255)];
         }
+
+        options.colorFn = options.colorFn || options.colourFn;
 
         types[type].prototype = new baseCA();
         types[type].prototype.constructor = types[type];
@@ -220,9 +223,14 @@ module.exports = factory;
 },{"./util.js":6}],3:[function(require,module,exports){
 var _ = require('./util.js');
 
-module.exports = function (canvas, grid, cellSize) {
+module.exports = function (canvas, grid, cellSize, trails, background) {
   var ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (trails && background) {
+    ctx.fillStyle = 'rgba(' + background + ',' + (1 - trails) + ')';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  } else if (trails) {
+    throw "Background must also be set for trails";
+  } else ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   _.each(grid, function (column, x) {
     _.each(column, function (creature, y) {
@@ -246,7 +254,7 @@ module.exports = function (canvas, grid, cellSize) {
 },{"./util.js":6}],4:[function(require,module,exports){
 // Creates an HD canvas element on page and
 // returns a reference to the element
-var createCanvasElement = function (width, height, cellSize, id, insertAfter) {
+var createCanvasElement = function (width, height, cellSize, id, insertAfter, background) {
   width *= cellSize;
   height *= cellSize;
 
@@ -276,6 +284,7 @@ var createCanvasElement = function (width, height, cellSize, id, insertAfter) {
     ctx.font = 'bold ' + cellSize + 'px Arial';
 
     if (id) canvas.id = id;
+    if (background) canvas.style.background = 'rgb(' + background + ')';
 
     return canvas;
   }
@@ -302,19 +311,32 @@ var dom = require('./dom.js');
  * Terrarium constructor function
  * @param {int} width             number of cells in the x-direction
  * @param {int} height            number of cells in the y-direction
- * @param {string} id             id assigned to the generated canvas
- * @param {int} cellSize          pixel width of each cell (default 10)
- * @param {string} insertAfter    id of the element to insert the canvas after
+ * @param {object} options
+ *   @param {string} id             id assigned to the generated canvas
+ *   @param {int} cellSize          pixel width of each cell (default 10)
+ *   @param {string} insertAfter    id of the element to insert the canvas after
+ *   @param {float} trails          a number from [0, 1] indicating whether trails should
+ *                                    be drawn (0 = no trails, 1 = neverending trails)
+ *                                    "background" option is required if trails is set
+ *   @param {array} background      an RGB triplet for the canvas' background
  */
-function Terrarium(width, height, id, cellSize, insertAfter) {
-  cellSize = cellSize || 10;
-  this.cellSize = cellSize;
+function Terrarium (width, height, options) {
+  var cellSize, neighborhood;
+  options = options || {};
+  cellSize = options.cellSize || 10;
+  neighborhood = options.neighborhood || options.neighbourhood;
+  if (typeof neighborhood === 'string') neighborhood = neighborhood.toLowerCase();
+
   this.width = width;
   this.height = height;
+  this.cellSize = cellSize;
+  this.trails = options.trails;
+  this.background = options.background;
+  this.canvas = dom.createCanvasElement(width, height, cellSize, options.id, options.insertAfter, this.background);
   this.grid = [];
-  this.canvas = dom.createCanvasElement(width, height, cellSize, id, insertAfter);
   this.nextFrame = false;
   this.hasChanged = false;
+  this.getNeighborCoords = _.getNeighborCoordsFn(width, height, neighborhood === 'vonneumann', options.periodic);
 }
 
 /**
@@ -397,7 +419,7 @@ Terrarium.prototype.step = function (steps) {
   function processCreaturesInner (creature, x, y) {
     if (creature) {
       var neighbors = _.map(
-        _.getNeighborCoords(x, y, gridWidth - 1, gridHeight - 1, creature.actionRadius),
+        self.getNeighborCoords(x, y, creature.actionRadius),
         zipCoordsWithNeighbors
       );
       var result = creature.process(neighbors, x, y);
@@ -485,7 +507,7 @@ Terrarium.prototype.step = function (steps) {
  * Updates the canvas to reflect the current grid
  */
 Terrarium.prototype.draw = function () {
-  display(this.canvas, this.grid, this.cellSize);
+  display(this.canvas, this.grid, this.cellSize, this.trails, this.background);
 };
 
 /**
@@ -539,26 +561,105 @@ var _ = require('../lodash_custom/lodash.custom.min.js')._;
  * Takes a cell and returns the coordinates of its neighbors
  * @param  {int} x0     - x position of cell
  * @param  {int} y0     - y position of cell
- * @param  {int} xMax   - maximum x index i.e. grid width - 1
- * @param  {int} yMax   - maximum x index i.e. grid height - 1
+ * @param  {int} xMax   - maximum x index i.e. grid width
+ * @param  {int} yMax   - maximum x index i.e. grid height
  * @param  {int} radius - (default = 1) neighbor radius
  * @return {array}      - an array of [x, y] pairs of the neighboring cells
  */
-_.getNeighborCoords = function (x0, y0, xMax, yMax, radius) {
-  var coords = [], current, xLo, xHi, yLo, yHi;
-  if (typeof radius !== 'number' || radius < 1) radius = 1;
+_.getNeighborCoordsFn = function (xMax, yMax, vonNeumann, periodic) {
+  if (periodic) {
+    if (vonNeumann) {
+      // periodic von neumann
+      return function (x0, y0, radius) {
+        var coords = [], x, rX, y, rY, rYMax;
 
-  xLo = Math.max(0, x0 - radius);
-  yLo = Math.max(0, y0 - radius);
-  xHi = Math.min(x0 + radius, xMax);
-  yHi = Math.min(y0 + radius, yMax);
+        for (rX = -radius; rX <= radius; ++rX) {
+          rYMax = radius - Math.abs(rX);
+          for (rY = -rYMax; rY <= rYMax; ++rY) {
+            x = ((rX + x0) % xMax + xMax) % xMax;
+            y = ((rY + y0) % yMax + yMax) % yMax;
+            if (x !== x0 || y !== y0) {
+              coords.push({
+                x: x,
+                y: y
+              });
+            }
+          }
+        }
 
-  for (var x = xLo; x <= xHi; x++)
-    for (var y = yLo; y <= yHi; y++)
-      if (x !== x0 || y !== y0)
-        coords.push({ x: x, y: y });
+        return coords;
+      };
+    }
+    else {
+      // periodic moore
+      return function (x0, y0, radius) {
+        var coords = [], x, xLo, xHi, y, yLo, yHi;
 
-  return coords;
+        xLo = x0 - radius;
+        yLo = y0 - radius;
+        xHi = x0 + radius;
+        yHi = y0 + radius;
+
+        for (x = xLo; x <= xHi; ++x) {
+          for (y = yLo; y <= yHi; ++y) {
+            if (x !== x0 || y !== y0) {
+              coords.push({
+                x: (x % xMax + xMax) % xMax,
+                y: (y % yMax + yMax) % yMax
+              });
+            }
+          }
+        }
+
+        return coords;
+      };
+    }
+  } else {
+    // non-periodic, need to restrict to within [0, max)
+    xMax -= 1;
+    yMax -= 1;
+
+    if (vonNeumann) {
+      //non-periodic von-neumann
+      return function (x0, y0, radius) {
+        var coords = [], x, rX, y, rY, rYMax;
+
+        for (rX = -radius; rX <= radius; ++rX) {
+          rYMax = radius - Math.abs(rX);
+          for (rY = -rYMax; rY <= rYMax; ++rY) {
+            x = rX + x0;
+            y = rY + y0;
+            if (x >= 0 && y >=0 && x <= xMax && y <= yMax && (x !== x0 || y !== y0)) {
+              coords.push({
+                x: x,
+                y: y
+              });
+            }
+          }
+        }
+
+        return coords;
+      };
+    }
+    else {
+      // non-periodic moore
+      return function (x0, y0, radius) {
+        var coords = [], x, xLo, xHi, y, yLo, yHi;
+
+        xLo = Math.max(0, x0 - radius);
+        yLo = Math.max(0, y0 - radius);
+        xHi = Math.min(x0 + radius, xMax);
+        yHi = Math.min(y0 + radius, yMax);
+
+        for (x = xLo; x <= xHi; ++x)
+          for (y = yLo; y <= yHi; ++y)
+            if (x !== x0 || y !== y0)
+              coords.push({ x: x, y: y });
+
+        return coords;
+      };
+    }
+  }
 };
 
 _.pickRandomWeighted = function (weightedArrays) {
